@@ -1,0 +1,444 @@
+---
+# Source: rundeck/templates/boostrap-wrapper-script-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: boostrap-wrapper-script
+data:
+  bootstrap.sh: |
+    #!/bin/bash
+  
+    set -e
+  
+    CONFIG_SRC=/home/rundeck/custom/rundeck-config/rundeck-config-append.properties
+    if test -f "$CONFIG_SRC"; then
+        echo "Applying custom rundeck-config.properties"
+        mkdir -p /tmp/remco-partials/rundeck-config
+        cp "$CONFIG_SRC" /tmp/remco-partials/rundeck-config/rundeck-config-custom.properties
+    fi
+  
+    FRAMEWORK_SRC=/home/rundeck/custom/framework/framework-append.properties
+    if test -f "$FRAMEWORK_SRC"; then
+        echo "Applying custom framework.properties"
+        # see https://docs.rundeck.com/docs/administration/configuration/docker/extending-configuration.html#special-destination-directories
+        mkdir -p /tmp/remco-partials/framework
+        cp "$FRAMEWORK_SRC" /tmp/remco-partials/framework/framework-custom.properties
+    fi
+  
+    if test -d /mnt/plugins; then
+        echo "Copying custom plugins"
+        cp -r /mnt/plugins/. /home/rundeck/libext
+    else
+        echo "Starting without custom plugins because mount point '/mnt/plugins' does not exist"
+    fi
+  
+    echo "Continue with common bootstrap"
+    exec /home/rundeck/docker-lib/entry.sh
+---
+# Source: rundeck/templates/nginx-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rundeck-nginx-configmap
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+data:
+  nginx.conf: |-
+    events {
+      worker_connections  1024;
+    }
+    
+    http {
+        server {
+            location /healthz {
+                return 204;
+                access_log off;
+            }
+            # our actual reason for this setup, allow options call for rundeck, because rundeck cannot do that
+          
+    
+            location / {
+                if ($request_method = 'OPTIONS') {
+                    add_header 'Access-Control-Allow-Origin' '*';
+                    add_header 'Access-Control-Allow-Credentials' 'true';
+                    add_header 'Access-Control-Allow-Methods' 'GET, HEAD, OPTIONS, POST, PUT';
+                    add_header 'Access-Control-Allow-Headers' 'Origin, X-Requested-With, Content-Type, Origin, User-Agent, If-Modified-Since, Cache-Control, Accept, X-Rundeck-Auth-Token';
+                    add_header 'Access-Control-Max-Age' 1728000;
+                    add_header 'Content-Length' 0;
+    
+                    return 200;
+                }
+    
+                recursive_error_pages on;
+                client_max_body_size 50M; # upload archives (backup/restore)
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Forwarded-Host $host:$server_port;
+                proxy_set_header X-Forwarded-Server $host;
+                proxy_set_header User-Agent $http_user_agent;
+                proxy_pass http://rundeck-backend:4440;
+            }
+        }
+    }
+---
+# Source: rundeck/templates/rundeck-environment-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rundeck-environment-configmap
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+data:
+    RUNDECK_LOGGING_STRATEGY: CONSOLE
+    RUNDECK_SECURITY_HTTPHEADERS_PROVIDER_CSP_ENABLED: "false"
+    RUNDECK_SERVER_FORWARDED: "true"
+---
+# Source: rundeck/templates/addons-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: rundeck-addons-claim
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "1G"
+---
+# Source: rundeck/templates/data-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: rundeck-data-claim
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "1G"
+---
+# Source: rundeck/templates/execution-logs-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: rundeck-execution-logs-claim
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "1G"
+---
+# Source: rundeck/templates/plugins-pvc.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: rundeck-plugins-claim
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "1G"
+---
+# Source: rundeck/templates/nginx-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rundeck-nginx
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: rundeck-nginx
+    app.kubernetes.io/instance: rundeck
+---
+# Source: rundeck/templates/rundeck-backend-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: rundeck-backend
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4440
+      targetPort: 4440
+      protocol: TCP
+      name: rundeck
+  selector:
+    app.kubernetes.io/name: rundeck-rundeck-backend
+    app.kubernetes.io/instance: rundeck
+---
+# Source: rundeck/templates/nginx-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rundeck-nginx
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rundeck-nginx
+      app.kubernetes.io/instance: rundeck
+  template:
+    metadata:
+      labels:
+        # This will restart the nginx pod if the nginx configuration changed
+        app.kubernetes.io/name: rundeck-nginx
+        app.kubernetes.io/instance: rundeck
+      annotations:
+        # needed to ensure that we update / redeploy the pod on config map changes
+        # see https://helm.sh/docs/howto/charts_tips_and_tricks/#automatically-roll-deployments
+        checksum/config: fa739509d47cf2f8151b143455da6c5d75db0c83d9cc730c9a1918941dc26d7a
+    spec:
+      securityContext:
+        fsGroupChangePolicy: "OnRootMismatch"
+      containers:
+        - name: nginx
+          image: nginx:stable
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+              scheme: HTTP
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+              scheme: HTTP
+            periodSeconds: 5
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx
+      serviceAccountName: default
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: rundeck-nginx-configmap
+            items:
+              - key: nginx.conf
+                path: nginx.conf
+---
+# Source: rundeck/templates/rundeck-backend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rundeck-rundeck-backend
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rundeck-rundeck-backend
+      app.kubernetes.io/instance: rundeck
+  template:
+    metadata:
+      annotations:
+        # This will restart the rundeck pod if its environment configuration is updated by helm
+        checksum/config: 312805888cd4fb2e4eb165da53101cbe9c26e220f7723ce94c767d595d7791b6
+      labels:
+        app.kubernetes.io/name: rundeck-rundeck-backend
+        app.kubernetes.io/instance: rundeck
+    spec:
+      initContainers:
+        - args:
+          - echo "Downloading Plugins."; wget https://github.com/rundeck-plugins/vault-storage/releases/download/1.3.12/vault-storage-1.3.12.jar
+            -O /home/rundeck/libext/vault-storage-1.3.12.jar; wget https://github.com/rundeck-plugins/rundeck-ec2-nodes-plugin/releases/download/v1.7.6/rundeck-ec2-nodes-plugin-1.7.6.jar
+            -O /home/rundeck/libext/rundeck-ec2-nodes-plugin-1.7.6.jar; chmod -R 777 /home/rundeck/libext;
+          command:
+          - sh
+          - -c
+          image: alpine:3.8
+          name: download-plugins
+          volumeMounts:
+          - mountPath: /home/rundeck/libext/
+            name: plugins
+      containers:
+        - name: rundeck
+          command: ["/bin/bash"]
+          args: ["/custom-scripts/bootstrap.sh"]
+          image: "rundeck/rundeck:5.2.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+          envFrom:
+          - configMapRef:
+              name: rundeck-environment-configmap
+          ports:
+            - name: rundeck
+              containerPort: 4440
+              protocol: TCP
+          env:
+            - name: RUNDECK_GRAILS_URL
+              value: "http://rundeck.bdaapps.com"
+            - name: RUNDECK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rundeck-test
+                  key: rundeck
+          volumeMounts:
+          - name: boostrap-wrapper-script
+            mountPath: /custom-scripts
+          - name: rundeck-execution-logs
+            mountPath: /home/rundeck/var/logs/rundeck/
+          - name: rundeck-data
+            mountPath: /home/rundeck/server/data
+          - name: rundeck-addons
+            mountPath: /home/rundeck/server/addons
+          - name: rundeck-plugins
+            mountPath: /mnt/plugins
+          - name: secrets-store-inline
+            mountPath: "/mnt/secrets-store"
+            readOnly: true
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - "/bin/sh"
+                  - "-c"
+                  - |
+                    /bin/bash << 'EOF'
+                    sed -i "s/^admin:admin/admin:$RUNDECK_ADMIN_PASSWORD/g" /home/rundeck/server/config/realm.properties
+                    cat >>/home/rundeck/server/config/rundeck-config.properties
+                    EOF
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 4440
+              scheme: HTTP
+            initialDelaySeconds: 120
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 4440
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 5
+          resources:
+            limits:
+              cpu: "1.5"
+              memory: "2Gi"
+            requests:
+              cpu: "0.5"
+              memory: "1Gi"
+
+      securityContext:
+        fsGroup: 0
+        runAsGroup: 0
+        runAsUser: 0
+      
+      serviceAccountName: default
+
+      volumes:
+        - name: boostrap-wrapper-script
+          configMap:
+            name: boostrap-wrapper-script
+        - name: rundeck-execution-logs
+          persistentVolumeClaim:
+            claimName: rundeck-execution-logs-claim
+        - name: rundeck-data
+          persistentVolumeClaim:
+            claimName: rundeck-data-claim
+        - name: rundeck-plugins
+          persistentVolumeClaim:
+            claimName: rundeck-plugins-claim
+        - name: rundeck-addons
+          persistentVolumeClaim:
+            claimName: rundeck-addons-claim
+        - emptyDir: {}
+          name: plugins
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "aws-secrets-rundeck"
+---
+# Source: rundeck/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rundeck
+  labels:     
+    app.kubernetes.io/name: rundeck
+    app.kubernetes.io/instance: rundeck
+spec:
+  ingressClassName: nginx
+#  tls:
+#    - secretName: chart-rundeck-bdaapps-tls
+#      hosts:
+#        - "rundeck.bdaapps.com"
+  rules:
+    - host: "rundeck.bdaapps.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rundeck-nginx
+                port:
+                  name: http
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: aws-secrets-rundeck
+  namespace: rundeck
+spec:
+  provider: aws
+  parameters:
+    objects: |
+      - objectName: "rundeck-test"
+        objectType: "secretsmanager"
+        jmesPath:
+          - path: rundeck
+            objectAlias: rundeck
+  secretObjects:
+    - secretName: rundeck-test
+      type: Opaque
+      data:
+        - objectName: rundeck
+          key: rundeck
